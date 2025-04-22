@@ -84,6 +84,7 @@ stages:
       displayName: 'Publish Artifact: drop'
       inputs:
         PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
 
 - stage: Deploy
   displayName: 'CD Stage'
@@ -96,13 +97,20 @@ stages:
       runOnce:
         deploy:
           steps:
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'drop'
+              downloadPath: '$(Pipeline.Workspace)'
+
           - task: AzureWebApp@1
             displayName: 'Azure Web App Deploy: BoardGameApp'
             inputs:
               azureSubscription: 'AzureforStudents'
               appType: 'webAppLinux'
               appName: 'BoardGameApp'
-              package: '$(Build.ArtifactStagingDirectory)/app.jar'
+              package: '$(Pipeline.Workspace)/drop/app.jar'
               runtimeStack: 'TOMCAT|9.0-java11'
               startUpCommand: 'java -jar /home/site/wwwroot/app.jar --server.port=80'
 
