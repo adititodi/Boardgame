@@ -1,0 +1,129 @@
+trigger:
+- main
+
+pool:
+  name: Azure Pipelines
+  demands:
+  - maven
+  - java
+
+variables:
+  mavenPOMFile: 'pom.xml'
+
+steps:
+# Step 1: SonarCloud Prepare (Must come before build to capture coverage)
+- task: SonarSource.sonarcloud.14d9cde6-c1da-4d55-aa01-2965cd301255.SonarCloudPrepare@3
+  displayName: 'Prepare analysis on SonarCloud'
+  inputs:
+    SonarQube: 'SonarQube Cloud'
+    organization: '321114110002'
+    scannerMode: 'CLI'
+    configMode: 'manual'
+    cliProjectKey: '321114110002_JAVA-CI-CD'
+    cliProjectName: 'JAVA-CI-CD'
+    cliSources: 'src'
+    extraProperties: |
+      sonar.java.binaries=target
+      sonar.junit.reportPaths=target/surefire-reports
+      sonar.jacoco.reportPaths=target/jacoco.exec
+      sonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
+
+# Step 2: Maven test with JaCoCo agent
+- task: Maven@3
+  displayName: 'Run Tests with JaCoCo'
+  inputs:
+    mavenPomFile: '$(mavenPOMFile)'
+    goals: 'clean test'
+    options: '-Pcoverage'
+
+# Step 3: Generate JaCoCo report
+- task: Maven@3
+  displayName: 'Generate JaCoCo Report'
+  inputs:
+    mavenPomFile: '$(mavenPOMFile)'
+    goals: 'jacoco:report'
+
+# Step 4: Run Maven Package
+- task: Maven@3
+  displayName: 'Maven Package'
+  inputs:
+    mavenPomFile: '$(mavenPOMFile)'
+    goals: 'package'
+
+# Step 5: SonarCloud Analyze
+- task: SonarSource.sonarcloud.ce096e50-6155-4de8-8800-4221aaeed4a1.SonarCloudAnalyze@3
+  displayName: 'Run SonarCloud Analysis'
+
+# Step 6: SonarCloud Quality Gate
+- task: SonarSource.sonarcloud.38b27399-a642-40af-bb7d-9971f69712e8.SonarCloudPublish@3
+  displayName: 'Publish Quality Gate Result'
+
+# Step 7: Copy .jar to artifact staging
+- task: CopyFiles@2
+  displayName: 'Copy Jar'
+  inputs:
+    SourceFolder: '$(System.DefaultWorkingDirectory)/target'
+    Contents: '*.jar'
+    TargetFolder: '$(Build.ArtifactStagingDirectory)'
+    flattenFolders: true
+  condition: succeededOrFailed()
+
+# Step 8: Copy Manifest File
+- task: CopyFiles@2
+  displayName: 'Copy Manifest File'
+  inputs:
+    SourceFolder: '$(System.DefaultWorkingDirectory)'
+    Contents: |
+     deployment-service.yaml
+    TargetFolder: '$(Build.ArtifactStagingDirectory)'
+  condition: succeededOrFailed()
+
+# Step 9: Publish build artifact
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish Artifact: drop'
+  inputs:
+    PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+
+# Step 10: Rename jar to app.jar for Azure Web App
+- script: |
+    cp $(System.DefaultWorkingDirectory)/target/database_service_project-0.0.7.jar $(Build.ArtifactStagingDirectory)/app.jar
+  displayName: 'Rename JAR to app.jar'
+
+# Step 11: Deploy to Azure Web App
+- task: AzureWebApp@1
+  displayName: 'Azure Web App Deploy: BoardGameApp'
+  inputs:
+    azureSubscription: 'AzureforStudents'
+    appType: 'webAppLinux'
+    appName: 'BoardGameApp'
+    package: '$(Build.ArtifactStagingDirectory)/app.jar'
+    runtimeStack: 'TOMCAT|9.0-java11'
+    startUpCommand: 'java -jar /home/site/wwwroot/app.jar --server.port=80'
+
+# Step 12: ZAP Docker Scan (optional)
+- script: |
+    echo "Pulling ZAP Docker image..."
+    docker pull ghcr.io/zaproxy/zaproxy:stable
+
+    echo "Preparing output directory..."
+    mkdir -p $(System.DefaultWorkingDirectory)/zap
+    chmod 777 $(System.DefaultWorkingDirectory)/zap
+
+    echo "Running ZAP full scan..."
+    docker run --rm -u 0 \
+      -v $(System.DefaultWorkingDirectory)/zap:/zap/wrk/:rw \
+      ghcr.io/zaproxy/zaproxy:stable \
+      zap-full-scan.py \
+      -t https://boardgameapp-ayghd3hyfcbkbafd.centralindia-01.azurewebsites.net \
+      -J zap_report.json \
+      -r zap_report.html \
+      -x zap_report.xml \
+      -I
+  displayName: 'Run OWASP ZAP Full Scan'
+
+# Step 13: Publish ZAP Scan Report
+- task: PublishBuildArtifacts@1
+  displayName: 'Publish ZAP Scan Report'
+  inputs:
+    PathtoPublish: '$(System.DefaultWorkingDirectory)/zap'
+    ArtifactName: 'ZAP-Report'
